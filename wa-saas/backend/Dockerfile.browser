@@ -1,0 +1,23 @@
+# Browser worker image: Node + system Chromium. Run with a CPU/memory limit, no published ports,
+# and BROWSER_DATA_DIR on an encrypted volume shared only between browser workers.
+FROM node:20-bookworm-slim AS build
+WORKDIR /app
+ENV PUPPETEER_SKIP_DOWNLOAD=1
+RUN apt-get update && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npx prisma generate && npm run build && npm prune --omit=dev
+
+FROM node:20-bookworm-slim
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends chromium fonts-noto fonts-noto-cjk openssl ca-certificates dumb-init \
+    && rm -rf /var/lib/apt/lists/* && useradd -r -m -u 1001 app && mkdir -p /data/sessions && chown app /data/sessions && chmod 700 /data/sessions
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/prisma ./prisma
+COPY package.json ./
+USER app
+ENV NODE_ENV=production BROWSER_EXECUTABLE_PATH=/usr/bin/chromium BROWSER_DATA_DIR=/data/sessions PUPPETEER_SKIP_DOWNLOAD=1
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["node", "dist/browser-worker.js"]

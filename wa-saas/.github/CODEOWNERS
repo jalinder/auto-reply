@@ -1,0 +1,4 @@
+# Database migrations and connector code need an explicit review (blueprint §15).
+/backend/prisma/                @your-org/backend-leads
+/backend/src/modules/browser/   @your-org/backend-leads
+/backend/src/modules/connectors/ @your-org/backend-leads

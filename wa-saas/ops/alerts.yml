@@ -1,0 +1,48 @@
+# Prometheus alert rules (blueprint §13). Scrape: API /metrics (Bearer METRICS_TOKEN),
+# send worker and browser worker on METRICS_PORT (internal network only).
+groups:
+  - name: relay
+    rules:
+      - alert: SendQueueBacklog
+        expr: relay_queue_oldest_waiting_seconds{queue="send"} > 600
+        for: 10m
+        labels: { severity: page }
+        annotations: { summary: "Send jobs waiting > 10 min — workers down or overloaded" }
+      - alert: DeadLetterGrowing
+        expr: increase(relay_queue_jobs{queue="dead-letter",state="waiting"}[30m]) > 10
+        labels: { severity: warn }
+        annotations: { summary: "Jobs are exhausting retries; inspect the dead-letter queue" }
+      - alert: BrowserSessionsDropping
+        expr: increase(relay_browser_events_total{event=~"disconnected|logged_out|start_failed"}[15m]) > 5
+        labels: { severity: page }
+        annotations: { summary: "Many WhatsApp sessions dropping — possible WhatsApp Web change or worker issue" }
+      - alert: BrowserWorkerDown
+        expr: absent(up{job="relay-browser-worker"} == 1)
+        for: 5m
+        labels: { severity: page }
+        annotations: { summary: "No browser worker is reporting metrics" }
+      - alert: ConnectionsNeedAttention
+        expr: sum(relay_connections{status=~"error|disconnected"}) / clamp_min(sum(relay_connections{status="connected"}), 1) > 0.2
+        for: 15m
+        labels: { severity: warn }
+        annotations: { summary: "More than 20% of linked numbers are disconnected or erroring" }
+      - alert: SendFailureSpike
+        expr: sum(rate(relay_send_outcomes_total{outcome=~"failed.*|unknown"}[15m])) / clamp_min(sum(rate(relay_send_outcomes_total[15m])), 0.001) > 0.25
+        for: 15m
+        labels: { severity: warn }
+        annotations: { summary: "Over 25% of sends failing or unknown" }
+      - alert: AbnormalSendVolume
+        expr: sum(rate(relay_send_outcomes_total[10m])) > 3 * sum(rate(relay_send_outcomes_total[1d] offset 1d))
+        for: 20m
+        labels: { severity: warn }
+        annotations: { summary: "Send volume is 3x yesterday's average — check for abuse or runaway campaigns" }
+      - alert: AuthFailureSpike
+        expr: sum(rate(relay_auth_failures_total[5m])) > 2
+        for: 10m
+        labels: { severity: warn }
+        annotations: { summary: "Repeated sign-in failures — possible credential stuffing" }
+      - alert: ApiErrors
+        expr: sum(rate(relay_http_request_duration_seconds_count{status=~"5.."}[5m])) > 1
+        for: 10m
+        labels: { severity: page }
+        annotations: { summary: "API returning 5xx errors" }

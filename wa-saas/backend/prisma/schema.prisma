@@ -1,0 +1,403 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id        String    @id @default(uuid()) @db.VarChar(36)
+  name      String    @db.VarChar(120)
+  slug      String    @unique @db.VarChar(80)
+  status    String    @default("active") @db.VarChar(20) // active | suspended | deleted
+  planId    String    @default("free") @db.VarChar(40)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  members       TenantMember[]
+  connections   WhatsappConnection[]
+  contacts      Contact[]
+  campaigns     Campaign[]
+  media         MediaAsset[]
+  optOuts       OptOut[]
+  subscriptions Subscription[]
+
+  @@map("tenants")
+}
+
+model User {
+  id           String    @id @default(uuid()) @db.VarChar(36)
+  email        String    @unique @db.VarChar(254)
+  phone        String?   @db.VarChar(20)
+  name         String    @db.VarChar(120)
+  passwordHash String?   @db.VarChar(255)
+  status       String    @default("active") @db.VarChar(20) // active | invited | disabled | deleted
+  failedLogins Int       @default(0)
+  twoFactorEnabled Boolean @default(false)
+  lockedUntil  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  memberships   TenantMember[]
+  refreshTokens RefreshToken[]
+
+  @@map("users")
+}
+
+model TenantMember {
+  id        String   @id @default(uuid()) @db.VarChar(36)
+  tenantId  String   @db.VarChar(36)
+  userId    String   @db.VarChar(36)
+  role      String   @db.VarChar(20) // owner | admin | editor | viewer
+  status    String   @default("active") @db.VarChar(20)
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
+  @@index([userId])
+  @@map("tenant_members")
+}
+
+model RefreshToken {
+  id           String    @id @default(uuid()) @db.VarChar(36)
+  userId       String    @db.VarChar(36)
+  tokenHash    String    @unique @db.VarChar(64)
+  familyId     String    @db.VarChar(36)
+  deviceId     String?   @db.VarChar(100)
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  replacedById String?   @db.VarChar(36)
+  createdAt    DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+/// Email one-time codes for optional two-step login. Only a hash of the code is stored.
+model LoginChallenge {
+  id         String    @id @default(uuid()) @db.VarChar(36)
+  userId     String    @db.VarChar(36)
+  codeHash   String    @db.VarChar(64)
+  deviceId   String?   @db.VarChar(100)
+  attempts   Int       @default(0)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@map("login_challenges")
+}
+
+model PasswordReset {
+  id        String    @id @default(uuid()) @db.VarChar(36)
+  userId    String    @db.VarChar(36)
+  tokenHash String    @unique @db.VarChar(64)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("password_resets")
+}
+
+model WhatsappConnection {
+  id                String    @id @default(uuid()) @db.VarChar(36)
+  tenantId          String    @db.VarChar(36)
+  connectorType     String    @db.VarChar(30) // cloud_api | sandbox | browser
+  label             String    @db.VarChar(80)
+  status            String    @db.VarChar(30) // created | waiting_for_qr | linking | connected | qr_expired | disconnected | error | revoked
+  maskedAccount     String?   @db.VarChar(40)
+  secretRef         String?   @db.VarChar(36)
+  providerAccountId String?   @db.VarChar(64) // e.g. Cloud API phone_number_id
+  wabaId            String?   @db.VarChar(64)
+  connectedAt       DateTime?
+  lastSeenAt        DateTime?
+  lastErrorCode     String?   @db.VarChar(60)
+  qrExpiresAt       DateTime?
+  idempotencyKey    String?   @db.VarChar(100)
+  createdById       String    @db.VarChar(36)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  tenant    Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  events    ConnectionEvent[]
+  campaigns Campaign[]
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, status])
+  @@index([providerAccountId])
+  @@map("whatsapp_connections")
+}
+
+model ConnectionEvent {
+  id           String   @id @default(uuid()) @db.VarChar(36)
+  connectionId String   @db.VarChar(36)
+  eventType    String   @db.VarChar(40)
+  safeMetadata Json?
+  createdAt    DateTime @default(now())
+
+  connection WhatsappConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([connectionId, createdAt])
+  @@map("connection_events")
+}
+
+/// Dedicated encrypted secret store (AES-256-GCM envelope). Business tables only keep secretRef.
+/// Swap SecretStore implementation for AWS Secrets Manager / KMS in production if preferred.
+model ConnectorSecret {
+  id         String   @id @default(uuid()) @db.VarChar(36)
+  tenantId   String   @db.VarChar(36)
+  ciphertext String   @db.Text
+  iv         String   @db.VarChar(32)
+  tag        String   @db.VarChar(32)
+  keyVersion Int
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("connector_secrets")
+}
+
+model Contact {
+  id           String    @id @default(uuid()) @db.VarChar(36)
+  tenantId     String    @db.VarChar(36)
+  phoneE164    String    @db.VarChar(20)
+  displayName  String?   @db.VarChar(120)
+  customFields Json
+  tags         Json
+  status       String    @default("active") @db.VarChar(20) // active | blocked
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  tenant   Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  consents ContactConsent[]
+  recipients CampaignRecipient[]
+
+  @@unique([tenantId, phoneE164])
+  @@index([tenantId, status])
+  @@index([tenantId, createdAt])
+  @@map("contacts")
+}
+
+model ContactConsent {
+  id         String    @id @default(uuid()) @db.VarChar(36)
+  tenantId   String    @db.VarChar(36)
+  contactId  String    @db.VarChar(36)
+  purpose    String    @db.VarChar(40) // marketing | transactional | support
+  source     String    @db.VarChar(80)
+  capturedAt DateTime
+  revokedAt  DateTime?
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, contactId])
+  @@map("contact_consent")
+}
+
+model OptOut {
+  id        String   @id @default(uuid()) @db.VarChar(36)
+  tenantId  String   @db.VarChar(36)
+  phoneE164 String   @db.VarChar(20)
+  reason    String?  @db.VarChar(200)
+  source    String   @db.VarChar(40) // manual | inbound_keyword | import | api
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, phoneE164])
+  @@map("opt_outs")
+}
+
+model MediaAsset {
+  id              String    @id @default(uuid()) @db.VarChar(36)
+  tenantId        String    @db.VarChar(36)
+  objectKey       String    @unique @db.VarChar(255)
+  fileName        String    @db.VarChar(200)
+  mimeType        String    @db.VarChar(100)
+  sizeBytes       Int
+  checksum        String?   @db.VarChar(128)
+  status          String    @default("pending") @db.VarChar(20) // pending | ready | rejected
+  rejectReason    String?   @db.VarChar(80)
+  purpose         String    @db.VarChar(20) // campaign | import | export
+  retentionUntil  DateTime?
+  createdById     String    @db.VarChar(36)
+  createdAt       DateTime  @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, purpose, createdAt])
+  @@map("media_assets")
+}
+
+model Campaign {
+  id                   String    @id @default(uuid()) @db.VarChar(36)
+  tenantId             String    @db.VarChar(36)
+  connectionId         String    @db.VarChar(36)
+  name                 String    @db.VarChar(120)
+  kind                 String    @default("campaign") @db.VarChar(20) // campaign | direct (one-off API send)
+  status               String    @default("draft") @db.VarChar(20) // draft | scheduled | running | paused | completed | cancelled
+  messageType          String    @default("text") @db.VarChar(20) // text | template
+  body                 String?   @db.Text
+  templateName         String?   @db.VarChar(120)
+  templateLanguage     String?   @db.VarChar(20)
+  templateParams       Json?
+  mediaId              String?   @db.VarChar(36)
+  audience             Json
+  scheduledAt          DateTime?
+  launchedAt           DateTime?
+  completedAt          DateTime?
+  pausedReason         String?   @db.VarChar(80)
+  version              Int       @default(1)
+  launchIdempotencyKey String?   @db.VarChar(100)
+  frozenContent        Json?
+  recipientCount       Int       @default(0)
+  createdById          String    @db.VarChar(36)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  tenant     Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  connection WhatsappConnection  @relation(fields: [connectionId], references: [id])
+  recipients CampaignRecipient[]
+
+  @@unique([tenantId, launchIdempotencyKey])
+  @@index([tenantId, status])
+  @@index([tenantId, kind, createdAt])
+  @@index([status, scheduledAt])
+  @@map("campaigns")
+}
+
+model CampaignRecipient {
+  id             String    @id @default(uuid()) @db.VarChar(36)
+  campaignId     String    @db.VarChar(36)
+  tenantId       String    @db.VarChar(36)
+  contactId      String    @db.VarChar(36)
+  phoneE164      String    @db.VarChar(20)
+  renderedBody   String?   @db.Text
+  renderedParams Json?
+  status         String    @default("queued") @db.VarChar(20) // queued | attempting | submitted | delivered | read | failed | unknown | skipped | cancelled
+  attemptCount   Int       @default(0)
+  idempotencyKey String    @unique @db.VarChar(120)
+  externalRef    String?   @db.VarChar(128)
+  lastErrorCode  String?   @db.VarChar(60)
+  leaseUntil     DateTime?
+  submittedAt    DateTime?
+  deliveredAt    DateTime?
+  readAt         DateTime?
+  failedAt       DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  campaign Campaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact  Contact        @relation(fields: [contactId], references: [id])
+  events   MessageEvent[]
+
+  @@unique([campaignId, contactId])
+  @@index([campaignId, status])
+  @@index([externalRef])
+  @@index([status, leaseUntil])
+  @@map("campaign_recipients")
+}
+
+model MessageEvent {
+  id          String   @id @default(uuid()) @db.VarChar(36)
+  tenantId    String   @db.VarChar(36)
+  recipientId String   @db.VarChar(36)
+  eventType   String   @db.VarChar(30) // queued | attempted | submitted | delivered | read | failed | unknown | skipped | cancelled
+  source      String   @db.VarChar(20) // system | connector | webhook
+  externalRef String?  @db.VarChar(128)
+  dedupKey    String?  @unique @db.VarChar(200)
+  safePayload Json?
+  occurredAt  DateTime
+  createdAt   DateTime @default(now())
+
+  recipient CampaignRecipient @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@index([recipientId, occurredAt])
+  @@index([tenantId, occurredAt])
+  @@map("message_events")
+}
+
+model ImportJob {
+  id             String    @id @default(uuid()) @db.VarChar(36)
+  tenantId       String    @db.VarChar(36)
+  mediaId        String    @db.VarChar(36)
+  status         String    @default("queued") @db.VarChar(20) // queued | processing | completed | failed
+  mapping        Json
+  rowCount       Int       @default(0)
+  createdCount   Int       @default(0)
+  updatedCount   Int       @default(0)
+  invalidCount   Int       @default(0)
+  duplicateCount Int       @default(0)
+  optedOutCount  Int       @default(0)
+  errorFileKey   String?   @db.VarChar(255)
+  errorSample    Json?
+  createdById    String    @db.VarChar(36)
+  createdAt      DateTime  @default(now())
+  completedAt    DateTime?
+
+  @@index([tenantId, createdAt])
+  @@map("import_jobs")
+}
+
+model Subscription {
+  id                     String    @id @default(uuid()) @db.VarChar(36)
+  tenantId               String    @db.VarChar(36)
+  provider               String    @db.VarChar(20)
+  providerSubscriptionId String    @unique @db.VarChar(100)
+  planId                 String    @db.VarChar(40)
+  status                 String    @db.VarChar(30)
+  periodEnd              DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("subscriptions")
+}
+
+model UsageRecord {
+  id          String   @id @default(uuid()) @db.VarChar(36)
+  tenantId    String   @db.VarChar(36)
+  metric      String   @db.VarChar(40) // messages_submitted
+  quantity    Int      @default(0)
+  periodStart DateTime
+  periodEnd   DateTime
+
+  @@unique([tenantId, metric, periodStart])
+  @@map("usage_records")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid()) @db.VarChar(36)
+  tenantId     String?  @db.VarChar(36)
+  actorId      String?  @db.VarChar(36)
+  action       String   @db.VarChar(60)
+  resourceType String   @db.VarChar(40)
+  resourceId   String?  @db.VarChar(36)
+  metadata     Json?
+  ip           String?  @db.VarChar(64)
+  requestId    String?  @db.VarChar(40)
+  createdAt    DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@map("audit_logs")
+}
+
+model WebhookReceipt {
+  id         String   @id @default(uuid()) @db.VarChar(36)
+  provider   String   @db.VarChar(20)
+  eventId    String   @db.VarChar(200)
+  receivedAt DateTime @default(now())
+
+  @@unique([provider, eventId])
+  @@map("webhook_receipts")
+}
